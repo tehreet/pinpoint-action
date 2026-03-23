@@ -1,0 +1,76 @@
+name: 'Pinpoint Gate'
+description: 'Verify GitHub Actions supply chain integrity before your workflow runs. Detects tag repointing, commit fabrication, and other supply chain attacks.'
+author: 'tehreet'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  version:
+    description: 'Pinpoint version to use'
+    required: false
+    default: 'v0.6.0'
+  mode:
+    description: 'Gate mode: "warn" (log only) or "enforce" (block on violations)'
+    required: false
+    default: 'warn'
+  all-workflows:
+    description: 'Verify actions across all workflow files (not just the triggering one)'
+    required: false
+    default: 'true'
+  token:
+    description: 'GitHub token for API access (defaults to GITHUB_TOKEN)'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download Pinpoint
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        OS="linux"
+        ARCH="amd64"
+        case "$(uname -m)" in
+          aarch64|arm64) ARCH="arm64" ;;
+        esac
+        case "$(uname -s)" in
+          Darwin) OS="darwin" ;;
+        esac
+        BINARY="pinpoint-${OS}-${ARCH}"
+        URL="https://github.com/tehreet/pinpoint/releases/download/${VERSION}/${BINARY}"
+
+        echo "::group::Downloading pinpoint ${VERSION} (${OS}/${ARCH})"
+        curl -sSL "$URL" -o "${RUNNER_TEMP}/pinpoint" --fail || {
+          echo "::error::Failed to download pinpoint from ${URL}"
+          echo "::error::Check that version ${VERSION} exists at https://github.com/tehreet/pinpoint/releases"
+          exit 1
+        }
+        chmod +x "${RUNNER_TEMP}/pinpoint"
+        echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+        echo "::endgroup::"
+
+    - name: Run Pinpoint Gate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        FLAGS=""
+        if [ "${{ inputs.mode }}" = "warn" ]; then
+          FLAGS="$FLAGS --warn"
+        fi
+        if [ "${{ inputs.all-workflows }}" = "true" ]; then
+          FLAGS="$FLAGS --all-workflows"
+        fi
+
+        echo "::group::Pinpoint Gate (${{ inputs.mode }} mode)"
+        pinpoint gate $FLAGS 2>&1
+        EXIT_CODE=$?
+        echo "::endgroup::"
+
+        if [ $EXIT_CODE -eq 2 ] && [ "${{ inputs.mode }}" = "enforce" ]; then
+          echo "::error::Pinpoint detected supply chain integrity violations. See gate output above."
+          exit 2
+        fi
